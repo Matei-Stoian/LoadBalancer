@@ -1,79 +1,118 @@
 package main
 
 import (
-	"context"
-	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
-	"time"
 )
 
-const (
-	Attemps int = iota
-	Request
-)
-
-type Backend struct {
-	ULR          *url.URL
-	Alive        bool
-	mux          sync.RWMutex
-	ReverseProxy *httputil.ReverseProxy
-}
-type ServerPool struct {
-	Backends []*Backend
-	current  uint64
+type LoadBalancer struct {
+	targets         []*url.URL
+	currentIndex    int
+	maxGRoutine     int
+	currentGRoutine int32
+	mux             sync.Mutex
+	wg              sync.WaitGroup
+	requestQueue    chan *http.Request
 }
 
-func (b *Backend) SetAlive(alive bool) {
-	b.mux.Lock()
-	b.Alive = alive
-	b.mux.Unlock()
+func NewLoadBalancer(target []*url.URL, maxGRoutines int, queuSize int) *LoadBalancer {
+	return &LoadBalancer{
+		targets:         target,
+		maxGRoutine:     maxGRoutines,
+		currentGRoutine: 0,
+		requestQueue:    make(chan *http.Request, queuSize),
+	}
 }
-func (b *Backend) IsAlive() (alive bool) {
-	b.mux.Lock()
-	alive = b.Alive
-	b.mux.Unlock()
-	return
+func parseDocker(env string) []*url.URL {
+	backendEnv := os.Getenv(env)
+	backendServers := strings.Split(backendEnv, ",")
+	if len(backendServers) == 0 {
+		log.Fatal("No backend servers listed")
+	}
+	var parsedTargets []*url.URL
+	for _, server := range backendServers {
+		parseServer, err := url.Parse(server)
+		if err != nil {
+			log.Fatal("Failed to parse: ", server)
+		}
+		parsedTargets = append(parsedTargets, parseServer)
+	}
+	return parsedTargets
 }
-func (s *ServerPool) AddBackend(b *Backend) {
-	s.Backends = append(s.Backends, b)
+func (lb *LoadBalancer) getNext() *url.URL {
+	lb.mux.Lock()
+	defer lb.mux.Unlock()
+	target := lb.targets[lb.currentIndex]
+	lb.currentIndex = (lb.currentIndex + 1) % len(lb.targets)
+	return target
 }
-func (s *ServerPool) NextIndex() int {
-	return int(atomic.AddUint64(&s.current, uint64(1)) % uint64(len(s.Backends)))
+func (lb *LoadBalancer) healtCheck(target *url.URL) bool {
+	resp, err := http.Get(target.String())
+	if err != nil || resp.StatusCode != http.StatusOK {
+		return false
+	}
+	return true
+}
+func (lb *LoadBalancer) ProccesRequest(target *url.URL, w http.ResponseWriter, r *http.Request) {
+	atomic.AddInt32(&lb.currentGRoutine, 1)
+	defer atomic.AddInt32(&lb.currentGRoutine, -1)
+
+	healthOk := lb.healtCheck(target)
+	if healthOk != true {
+		http.Error(w, "Backedn server is down", http.StatusServiceUnavailable)
+		return
+	}
+	proxy := NewReverseProxy(target)
+	proxy.ServeHTTP(w, r)
+}
+func (lb *LoadBalancer) handle(w http.ResponseWriter, r *http.Request) {
+	if atomic.LoadInt32(&lb.currentGRoutine) >= int32(lb.maxGRoutine) {
+		lb.requestQueue <- r
+		http.Error(w, "Request queued", http.StatusProcessing)
+		return
+	}
+	lb.wg.Add(1)
+	defer lb.wg.Done()
+	target := lb.getNext()
+	go lb.ProccesRequest(target, w, r)
+}
+func NewReverseProxy(target *url.URL) *httputil.ReverseProxy {
+	return httputil.NewSingleHostReverseProxy(target)
+}
+func (lb *LoadBalancer) proccesQueue() {
+	for {
+		select {
+		case req := <-lb.requestQueue:
+			if req != nil {
+				target := lb.getNext()
+				lb.wg.Add(1)
+				defer lb.wg.Done()
+				go lb.ProccesRequest(target, nil, req)
+			}
+		}
+
+	}
 }
 func main() {
-	var serverList string
-	var port int
-	flag.StringVar(&serverList, "backends", "", "Load balanced backends, use commas to separte")
-	flag.IntVar(&port, "port", 3030, "Port to serve")
-	flag.Parse()
-	if len(serverList) == 0 {
-		log.Fatal("Please provide one more backend to the load balancer")
+	backendServers := parseDocker("BACKEND_SERVERS")
+	maxGRoutines := 60
+	queueSize := 100
+
+	lb := NewLoadBalancer(backendServers, maxGRoutines, queueSize)
+	go lb.proccesQueue()
+	http.HandleFunc("/", lb.handle)
+	port := 8080
+	fmt.Println("Load Balancer listening on port %d...\n", port)
+	err := http.ListenAndServe(fmt.Sprintf(":%d", port), nil)
+	if err != nil {
+		log.Fatal("Error starting the server: ", err)
 	}
-	tokens := strings.Split(serverList, ",")
-	for _, token := range tokens {
-		serverUrl, err := url.Parse(token)
-		if err != nil {
-			log.Fatal(err)
-		}
-		proxy := httputil.NewSingleHostReverseProxy(serverUrl)
-		proxy.ErrorHandler = func(writer http.ResponseWriter, request *http.Request, e error) {
-			log.Printf("[%s] %s\n", serverUrl.Host, e.Error())
-			retries := GetRetryFromContext(request)
-			if retries < 3 {
-				select {
-				case <-time.After(10 * time.Millisecond):
-					ctx := context.WithValue(request.Context(), Retry, retries+1)
-					proxy.ServeHTTP(writer, request.WithContext(ctx))
-				}
-				return
-			}
-			serverPool
-		}
-	}
+	lb.wg.Wait()
 }

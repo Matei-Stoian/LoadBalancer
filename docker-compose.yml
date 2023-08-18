@@ -1,0 +1,8 @@
+version: '3'
+services:
+  load-balancer:
+    image: your-image-name:your-image-tag
+    environment:
+      - BACKEND_SERVERS=http://backend1:8080,http://backend2:8080
+    ports:
+      - "8080:8080"

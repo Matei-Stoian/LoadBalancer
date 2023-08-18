@@ -1,12 +1,16 @@
-FROM golang:1.20 as build
-WORKDIR /app
-COPY go.mod ./
-RUN go mod install 
-COPY *.go ./
-RUN CGO_ENABLED=0 GOOS=linux go build -o lb .
+FROM golang:latest AS build
 
-FROM apline:latest
-RUN apk --no-chache add ce-certificate
-WORKDIR /root
-COPY --from=build /app/lb .
-ENTRYPOINT ["/root/lb"]
+WORKDIR /app
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+RUN CGO_ENABLED=0 GOOS=linux go build -o app
+
+FROM alpine:latest AS final
+RUN apk --no-cache add ca-certificates
+WORKDIR /root/
+COPY --from=build /app/app .
+CMD ["./app"]
