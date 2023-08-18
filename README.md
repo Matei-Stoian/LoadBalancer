@@ -16,4 +16,4 @@ Then in your docker-compose file, you will add the following
             ports:
                 - "8080:8080" 
 ```
-To add or remove backend servers modivie the environment variable BACKEND_SERVERS. **The backend server must be specified with the open port**.
+To add or remove backend servers modifie the environment variable BACKEND_SERVERS. **The backend server must be specified with the open port**.
