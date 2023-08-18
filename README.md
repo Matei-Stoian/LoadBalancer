@@ -1,5 +1,5 @@
 # Load Balancer
-This is a simple Load Balancer writen in Golang. The main algorithm used is Round Robin.
+This is a simple Load Balancer writen in Golang. The algorithm I used for this implementation is Round Robin.
 
 ## How to use 
 To use the load balancer you will need to get the docker file and buld an image using 
