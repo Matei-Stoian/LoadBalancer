@@ -1,8 +1,10 @@
 version: '3'
 services:
   load-balancer:
-    image: your-image-name:your-image-tag
+    build:
+      context: .
+      dockerfile: Dockerfile
     environment:
-      - BACKEND_SERVERS=http://backend1:8080,http://backend2:8080
+      - BACKEND_SERVERS=http://172.27.167.40:8081/,http://172.27.167.40:8082/
     ports:
       - "8080:8080"

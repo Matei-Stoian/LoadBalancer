@@ -65,8 +65,8 @@ func (lb *LoadBalancer) ProccesRequest(target *url.URL, w http.ResponseWriter, r
 	defer atomic.AddInt32(&lb.currentGRoutine, -1)
 
 	healthOk := lb.healtCheck(target)
-	if healthOk != true {
-		http.Error(w, "Backedn server is down", http.StatusServiceUnavailable)
+	if !healthOk {
+
 		return
 	}
 	proxy := NewReverseProxy(target)
@@ -84,7 +84,13 @@ func (lb *LoadBalancer) handle(w http.ResponseWriter, r *http.Request) {
 	go lb.ProccesRequest(target, w, r)
 }
 func NewReverseProxy(target *url.URL) *httputil.ReverseProxy {
-	return httputil.NewSingleHostReverseProxy(target)
+	director := func(req *http.Request) {
+		req.URL.Scheme = target.Scheme
+		req.URL.Host = target.Host
+		req.URL.Path = target.Path
+		req.Host = target.Host
+	}
+	return &httputil.ReverseProxy{Director: director}
 }
 func (lb *LoadBalancer) proccesQueue() {
 	for {
@@ -92,8 +98,7 @@ func (lb *LoadBalancer) proccesQueue() {
 		case req := <-lb.requestQueue:
 			if req != nil {
 				target := lb.getNext()
-				lb.wg.Add(1)
-				defer lb.wg.Done()
+
 				go lb.ProccesRequest(target, nil, req)
 			}
 		}
@@ -109,7 +114,9 @@ func main() {
 	go lb.proccesQueue()
 	http.HandleFunc("/", lb.handle)
 	port := 8080
-	fmt.Println("Load Balancer listening on port %d...\n", port)
+	for _, v := range lb.targets {
+		fmt.Println(v.Host)
+	}
 	err := http.ListenAndServe(fmt.Sprintf(":%d", port), nil)
 	if err != nil {
 		log.Fatal("Error starting the server: ", err)
