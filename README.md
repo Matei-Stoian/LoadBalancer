@@ -18,6 +18,5 @@ To run use commands:
 ```
     docker-compose build
     docker-compuse up
-
 ```
 To add or remove backend servers modifie the environment variable BACKEND_SERVERS. **The backend server must be specified with the open port**.
